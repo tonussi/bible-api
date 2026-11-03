@@ -159,6 +159,10 @@ app.post('/api/auth/refresh', authenticateToken, (req, res) => {
   }
 })
 
+app.get('/api/health', (req, res) => {
+  res.status(200);
+})
+
 app.post('/api/process', authenticateToken, async (req, res) => {
   /* 
     #swagger.security = [{ "bearerAuth": [] }]
