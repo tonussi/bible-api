@@ -2,7 +2,6 @@ const fs = require('fs')
 const http = require('http')
 const cors = require('cors')
 const express = require('express')
-const { Server } = require('socket.io')
 const logger = require('./Logging')
 const swaggerUi = require('swagger-ui-express')
 const {
@@ -21,71 +20,52 @@ const {
   computeStatisticsQueueEvents,
 } = require('./workers')
 const { register, login, authenticateToken, refreshToken } = require('./Auth')
+const { websocket, broadcast } = require('./client-messaging')
 
 const app = express()
 const server = http.createServer(app)
-const io = new Server(server, { cors: { origin: '*' } })
+websocket(server)
 
 const port = process.env.PORT || 3001
-
-io.on('connection', (socket) => {
-  logger.info(`WebSocket connected: ${socket.id}`)
-
-  // Max connection time: 5 minutes (300000 ms)
-  const maxConnectionTimer = setTimeout(
-    () => {
-      logger.info(
-        `Forcefully disconnecting socket ${socket.id} after 5 minutes`
-      )
-      socket.disconnect(true)
-    },
-    5 * 60 * 1000
-  )
-
-  socket.on('disconnect', () => {
-    clearTimeout(maxConnectionTimer)
-    logger.info(`WebSocket disconnected: ${socket.id}`)
-  })
-})
 
 segmentsQueueEvents.on('completed', ({ jobId, returnvalue }) => {
   try {
     const parsedResult =
       typeof returnvalue === 'string' ? JSON.parse(returnvalue) : returnvalue
-    io.emit('process-completed', { jobId, result: parsedResult })
+    broadcast('process-completed', { jobId, result: parsedResult })
   } catch (err) {
     logger.error(
       `Error parsing process-completed result for job ${jobId}: ${err.message}`
     )
-    io.emit('process-completed', { jobId, result: returnvalue })
+    broadcast('process-completed', { jobId, result: returnvalue })
   } finally {
-    io.emit('finish', { jobId })
+    broadcast('finish', { jobId })
   }
 })
 
 segmentsQueueEvents.on('failed', ({ jobId, failedReason }) => {
-  io.emit('process-failed', { jobId, error: failedReason })
-  io.emit('finish', { jobId })
+  broadcast('process-failed', { jobId, error: failedReason })
+  broadcast('finish', { jobId })
 })
 
 computeStatisticsQueueEvents.on('completed', ({ jobId, returnvalue }) => {
   try {
     const parsedResult =
       typeof returnvalue === 'string' ? JSON.parse(returnvalue) : returnvalue
-    io.emit('compute-statistics-completed', { jobId, result: parsedResult })
+    broadcast('compute-statistics-completed', { jobId, result: parsedResult })
   } catch (err) {
     logger.error(
       `Error parsing compute-statistics-completed result for job ${jobId}: ${err.message}`
     )
-    io.emit('compute-statistics-completed', { jobId, result: returnvalue })
+    broadcast('compute-statistics-completed', { jobId, result: returnvalue })
   } finally {
-    io.emit('finish', { jobId })
+    broadcast('finish', { jobId })
   }
 })
 
 computeStatisticsQueueEvents.on('failed', ({ jobId, failedReason }) => {
-  io.emit('compute-statistics-failed', { jobId, error: failedReason })
-  io.emit('finish', { jobId })
+  broadcast('compute-statistics-failed', { jobId, error: failedReason })
+  broadcast('finish', { jobId })
 })
 
 app.use(cors())

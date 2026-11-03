@@ -1,20 +1,60 @@
 const textSimilarity = require('text-similarity-node')
 
+const WORD_PATTERN = /[\p{L}\p{M}\p{N}]+/gu
+const DIACRITIC_PATTERN = /\p{M}/gu
+
+function normalizeWord(word) {
+  return word
+    .normalize('NFD')
+    .replace(DIACRITIC_PATTERN, '')
+    .toLocaleLowerCase('el')
+}
+
 /**
  * Tokenize text into words, removing punctuation.
- * Handles Greek (α-ωΑ-Ω), Latin (a-zA-Z), and digits.
+ * Handles Unicode letters, combining marks, and digits.
  * @param {string} text
  * @returns {string[]}
  */
 function tokenize(text) {
   if (!text) return []
-  return (
-    text
-      .toLowerCase()
-      // .replace(/[^α-ωΑ-Ωa-zA-Z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter((word) => word.length > 0)
+  return (text.match(WORD_PATTERN) || []).map((word) =>
+    word.toLocaleLowerCase('el')
   )
+}
+
+function wordsAreEqual(word1, word2) {
+  return normalizeWord(word1) === normalizeWord(word2)
+}
+
+function selectNonOverlappingMatches(matches) {
+  const selected = []
+  const usedWords1 = new Set()
+  const usedWords2 = new Set()
+  const candidates = [...matches].sort(
+    (a, b) => b.length - a.length || a.start1 - b.start1 || a.start2 - b.start2
+  )
+
+  for (const match of candidates) {
+    const overlapsFirst = Array.from(
+      { length: match.length },
+      (_, offset) => match.start1 + offset
+    ).some((index) => usedWords1.has(index))
+    const overlapsSecond = Array.from(
+      { length: match.length },
+      (_, offset) => match.start2 + offset
+    ).some((index) => usedWords2.has(index))
+
+    if (overlapsFirst || overlapsSecond) continue
+
+    selected.push(match)
+    for (let offset = 0; offset < match.length; offset++) {
+      usedWords1.add(match.start1 + offset)
+      usedWords2.add(match.start2 + offset)
+    }
+  }
+
+  return selected.sort((a, b) => a.start1 - b.start1 || a.start2 - b.start2)
 }
 
 /**
@@ -71,14 +111,23 @@ function getVerseAtWordIdx(verseWordMap, wordIdx) {
  * @returns {{isSimilar: boolean, similarity: number}}
  */
 function areSimilar(word1, word2, threshold = 0.8) {
-  if (word1 === word2) return { isSimilar: true, similarity: 1 }
+  const normalizedWord1 = normalizeWord(word1)
+  const normalizedWord2 = normalizeWord(word2)
 
-  const maxLen = Math.max(word1.length, word2.length)
+  if (normalizedWord1 === normalizedWord2) {
+    return { isSimilar: true, similarity: 1 }
+  }
+
+  const maxLen = Math.max(normalizedWord1.length, normalizedWord2.length)
   if (maxLen === 0) return { isSimilar: true, similarity: 1 }
 
   // For very short words, be stricter — at most 1 edit
   if (maxLen <= 3) {
-    const dist = textSimilarity.distance.levenshtein(word1, word2, true)
+    const dist = textSimilarity.distance.levenshtein(
+      normalizedWord1,
+      normalizedWord2,
+      true
+    )
     return {
       isSimilar: dist <= 1,
       similarity: maxLen === 0 ? 1 : 1 - dist / maxLen,
@@ -86,7 +135,11 @@ function areSimilar(word1, word2, threshold = 0.8) {
   }
 
   // Use native Levenshtein similarity (returns 0–1)
-  const sim = textSimilarity.similarity.levenshtein(word1, word2, true)
+  const sim = textSimilarity.similarity.levenshtein(
+    normalizedWord1,
+    normalizedWord2,
+    true
+  )
   return {
     isSimilar: sim >= threshold,
     similarity: sim,
@@ -117,40 +170,43 @@ function findMatchingSequences(
 
   for (let i = 0; i <= words1.length - minLength; i++) {
     for (let j = 0; j <= words2.length - minLength; j++) {
+      if (
+        i > 0 &&
+        j > 0 &&
+        wordsAreEqual(words1[i - 1], words2[j - 1])
+      ) {
+        continue
+      }
+
       let matchLen = 0
       while (
         i + matchLen < words1.length &&
         j + matchLen < words2.length &&
-        words1[i + matchLen] === words2[j + matchLen]
+        wordsAreEqual(words1[i + matchLen], words2[j + matchLen])
       ) {
         matchLen++
       }
 
       if (matchLen >= minLength) {
-        const isDuplicate = matches.some(
-          (m) => m.start1 === i && m.start2 === j
-        )
-        if (!isDuplicate) {
-          const ref1 = getVerseAtWordIdx(verseWordMap1, i)
-          const ref2 = getVerseAtWordIdx(verseWordMap2, j)
-          matches.push({
-            words: words1.slice(i, i + matchLen),
-            length: matchLen,
-            start1: i,
-            start2: j,
-            book1: ref1.book,
-            chapter1: ref1.chapter,
-            verse1: ref1.verse,
-            book2: ref2.book,
-            chapter2: ref2.chapter,
-            verse2: ref2.verse,
-          })
-        }
+        const ref1 = getVerseAtWordIdx(verseWordMap1, i)
+        const ref2 = getVerseAtWordIdx(verseWordMap2, j)
+        matches.push({
+          words: words1.slice(i, i + matchLen),
+          length: matchLen,
+          start1: i,
+          start2: j,
+          book1: ref1.book,
+          chapter1: ref1.chapter,
+          verse1: ref1.verse,
+          book2: ref2.book,
+          chapter2: ref2.chapter,
+          verse2: ref2.verse,
+        })
       }
     }
   }
 
-  return matches
+  return selectNonOverlappingMatches(matches)
 }
 
 /**
@@ -180,6 +236,15 @@ function findRelaxedMatchingSequences(
 
   for (let i = 0; i <= words1.length - minLength; i++) {
     for (let j = 0; j <= words2.length - minLength; j++) {
+      if (
+        i > 0 &&
+        j > 0 &&
+        areSimilar(words1[i - 1], words2[j - 1], similarityThreshold)
+          .isSimilar
+      ) {
+        continue
+      }
+
       let matchLen = 0
       let totalSimilarity = 0
 
@@ -202,32 +267,27 @@ function findRelaxedMatchingSequences(
 
       if (matchLen >= minLength) {
         const avgSimilarity = totalSimilarity / matchLen
-        const isDuplicate = matches.some(
-          (m) => m.start1 === i && m.start2 === j
-        )
-        if (!isDuplicate) {
-          const ref1 = getVerseAtWordIdx(verseWordMap1, i)
-          const ref2 = getVerseAtWordIdx(verseWordMap2, j)
-          matches.push({
-            words: words1.slice(i, i + matchLen),
-            words2: words2.slice(j, j + matchLen),
-            length: matchLen,
-            start1: i,
-            start2: j,
-            book1: ref1.book,
-            chapter1: ref1.chapter,
-            verse1: ref1.verse,
-            book2: ref2.book,
-            chapter2: ref2.chapter,
-            verse2: ref2.verse,
-            similarity: Math.round(avgSimilarity * 100),
-          })
-        }
+        const ref1 = getVerseAtWordIdx(verseWordMap1, i)
+        const ref2 = getVerseAtWordIdx(verseWordMap2, j)
+        matches.push({
+          words: words1.slice(i, i + matchLen),
+          words2: words2.slice(j, j + matchLen),
+          length: matchLen,
+          start1: i,
+          start2: j,
+          book1: ref1.book,
+          chapter1: ref1.chapter,
+          verse1: ref1.verse,
+          book2: ref2.book,
+          chapter2: ref2.chapter,
+          verse2: ref2.verse,
+          similarity: Math.round(avgSimilarity * 100),
+        })
       }
     }
   }
 
-  return matches
+  return selectNonOverlappingMatches(matches)
 }
 
 /**
@@ -306,34 +366,23 @@ function computeStatistics(
               verseWordMaps[g2]
             )
 
-      // Find the single best match (longest sequence)
-      // For relaxed mode, tie-break with similarity
-      const bestMatch = matches.reduce((best, current) => {
-        if (!best) return current
-        if (current.length > best.length) return current
-        if (current.length === best.length) {
-          const currentSim = current.similarity || 0
-          const bestSim = best.similarity || 0
-          if (currentSim > bestSim) return current
-        }
-        return best
-      }, null)
-
-      const finalMatches = bestMatch ? [bestMatch] : []
-      const totalMatchingWords = bestMatch ? bestMatch.length : 0
+      const totalMatchingWords = matches.reduce(
+        (total, match) => total + match.length,
+        0
+      )
 
       statistics.pairs[pairKey] = {
-        count: finalMatches.length,
+        count: matches.length,
         totalWords: totalMatchingWords,
-        sequences: finalMatches,
-        matchPercentage:
-          tokenized[g1].length + tokenized[g2].length > 0
-            ? (
-                (2 * totalMatchingWords) /
-                (tokenized[g1].length + tokenized[g2].length) *
-                100
-              ).toFixed(1)
+        sequences: matches,
+        matchPercentage: {
+          [g1]: tokenized[g1].length
+            ? ((totalMatchingWords / tokenized[g1].length) * 100).toFixed(1)
             : '0.0',
+          [g2]: tokenized[g2].length
+            ? ((totalMatchingWords / tokenized[g2].length) * 100).toFixed(1)
+            : '0.0',
+        },
       }
     }
   }
@@ -360,7 +409,9 @@ function computeStatistics(
           )
           return {
             ...seq1,
-            [`verse_${g}`]: matchingSeq ? matchingSeq[`verse${i + 1}`] : null,
+            [`verse_${g}`]: matchingSeq?.verse2 || null,
+            [`book_${g}`]: matchingSeq?.book2 || null,
+            [`chapter_${g}`]: matchingSeq?.chapter2 || null,
           }
         })
     }
@@ -392,9 +443,10 @@ function computeStatistics(
               : idx === 2
                 ? 'chapter3'
                 : 'chapter4'
-        result[`verse_${g}`] = seq[verseProp] || null
-        result[`book_${g}`] = seq[bookProp] || null
-        result[`chapter_${g}`] = seq[chapterProp] || null
+        result[`verse_${g}`] = result[`verse_${g}`] || seq[verseProp] || null
+        result[`book_${g}`] = result[`book_${g}`] || seq[bookProp] || null
+        result[`chapter_${g}`] =
+          result[`chapter_${g}`] || seq[chapterProp] || null
       })
       return result
     })

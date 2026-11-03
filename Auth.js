@@ -1,10 +1,7 @@
-const jwt = require('jsonwebtoken')
 const bcrypt = require('bcryptjs')
 const Database = require('better-sqlite3')
 const path = require('path')
-const dotenv = require('dotenv')
-
-dotenv.config()
+const Token = require('./Token')
 
 const dbPath = path.resolve(__dirname, 'users.db')
 const db = new Database(dbPath)
@@ -18,9 +15,6 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `)
-
-const JWT_SECRET = process.env.JWT_SECRET || 'secret'
-const JWT_EXPIRATION = process.env.JWT_EXPIRATION || '24h'
 
 /**
  * Register a new user
@@ -54,7 +48,7 @@ const login = (username, password) => {
   if (!user || !bcrypt.compareSync(password, user.password)) {
     throw new Error('Invalid username or password')
   }
-  const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: JWT_EXPIRATION })
+  const token = Token.sign({ id: user.id, username: user.username })
   return { token, user: { id: user.id, username: user.username } }
 }
 
@@ -70,7 +64,7 @@ const authenticateToken = (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET)
+    const decoded = Token.verify(token)
     req.user = decoded
     next()
   } catch (err) {
@@ -84,9 +78,8 @@ const authenticateToken = (req, res, next) => {
  * @returns {object} { token }
  */
 const refreshToken = (token) => {
-  const decoded = jwt.verify(token, JWT_SECRET)
-  const { iat, exp, ...payload } = decoded
-  const newToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRATION })
+  const { iat, exp, ...payload } = Token.verify(token)
+  const newToken = Token.sign(payload)
   return { token: newToken }
 }
 

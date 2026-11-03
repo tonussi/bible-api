@@ -236,6 +236,60 @@ describe('ComputeStatisticsWorker.perform', () => {
     assert.ok(pair.count > 0, 'Should find matching Greek word sequences')
   })
 
+  it('matches polytonic Greek regardless of punctuation, case, and diacritics', async () => {
+    const section = makeSection('polytonic', 'Polytonic Greek', [
+      makePassage('matthew', [
+        { verse: 1, text: 'Ἐν ἀρχῇ ἦν ὁ Λόγος·' },
+      ]),
+      makePassage('john', [
+        { verse: 1, text: 'εν αρχη ην ο λογος' },
+      ]),
+    ])
+
+    const [result] = await ComputeStatisticsWorker.perform({
+      verses: [section],
+      minLength: 3,
+    })
+    const pair = result.pairs['matthew-john']
+
+    assert.equal(result.totalWords.matthew, 5)
+    assert.equal(result.totalWords.john, 5)
+    assert.equal(pair.count, 1)
+    assert.equal(pair.totalWords, 5)
+    assert.deepEqual(pair.matchPercentage, {
+      matthew: '100.0',
+      john: '100.0',
+    })
+  })
+
+  it('counts separate matches without counting overlapping suffixes twice', async () => {
+    const section = makeSection('separate', 'Separate matches', [
+      makePassage('matthew', [
+        { verse: 1, text: 'alpha beta gamma x delta epsilon zeta' },
+      ]),
+      makePassage('mark', [
+        { verse: 1, text: 'alpha beta gamma y delta epsilon zeta' },
+      ]),
+    ])
+
+    const [result] = await ComputeStatisticsWorker.perform({
+      verses: [section],
+      minLength: 3,
+    })
+    const pair = result.pairs['matthew-mark']
+
+    assert.equal(pair.count, 2)
+    assert.equal(pair.totalWords, 6)
+    assert.deepEqual(
+      pair.sequences.map((sequence) => sequence.words.join(' ')),
+      ['alpha beta gamma', 'delta epsilon zeta']
+    )
+    assert.deepEqual(pair.matchPercentage, {
+      matthew: '85.7',
+      mark: '85.7',
+    })
+  })
+
   // ── Relaxed mode ───────────────────────────────────────────────────────
 
   it('relaxed mode finds similar-but-not-identical sequences', async () => {
